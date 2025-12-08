@@ -72,7 +72,7 @@ public class ClientConfiguration implements Globals
             {
                 clientDir = runningDir;
             }
-            clientDir = clientDir.resolve(".shoreline");
+            this.clientDir = mc.runDirectory.toPath().resolve("shoreline");
             // create client directory
             if (!Files.exists(clientDir))
             {
