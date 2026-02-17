@@ -8,7 +8,6 @@ import net.minecraft.client.session.Session;
 import net.minecraft.text.Text;
 import net.shoreline.client.Shoreline;
 import net.shoreline.client.api.account.msa.exception.MSAAuthException;
-import net.shoreline.client.api.account.type.MinecraftAccount;
 import net.shoreline.client.api.account.type.impl.CrackedAccount;
 import net.shoreline.client.api.account.type.impl.MicrosoftAccount;
 import net.shoreline.client.impl.manager.client.AccountManager;
@@ -27,7 +26,7 @@ import static org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE;
 public final class AccountAddAccountScreen extends Screen
 {
     private final Screen parent;
-    private TextFieldWidget email, password;
+    private TextFieldWidget username;
 
     public AccountAddAccountScreen(final Screen parent)
     {
@@ -39,33 +38,20 @@ public final class AccountAddAccountScreen extends Screen
     protected void init()
     {
         clearChildren();
-        addDrawableChild(email = new TextFieldWidget(client.textRenderer, width / 2 - 75, height / 2 - 30, 150, 20, Text.of("")));
-        email.setPlaceholder(Text.of("Email or Username..."));
-        addDrawableChild(password = new TextFieldWidget(client.textRenderer, width / 2 - 75, height / 2 - 5, 150, 20, Text.of("")));
-        password.setPlaceholder(Text.of("Password (Optional)"));
+        addDrawableChild(username = new TextFieldWidget(client.textRenderer, width / 2 - 75, height / 2 - 20, 150, 20, Text.of("")));
+        username.setPlaceholder(Text.of("Username (Cracked)..."));
 
-        addDrawableChild(ButtonWidget.builder(Text.of("Add"), (action) ->
+        addDrawableChild(ButtonWidget.builder(Text.of("Add Cracked"), (action) ->
         {
-            final String accountEmail = email.getText();
-            if (accountEmail.length() >= 3)
+            final String accountUsername = username.getText();
+            if (accountUsername.length() >= 3)
             {
-                final String accountPassword = password.getText();
-                MinecraftAccount account;
-                if (!accountPassword.isEmpty())
-                {
-                    account = new MicrosoftAccount(accountEmail, accountPassword);
-                }
-                else
-                {
-                    account = new CrackedAccount(accountEmail);
-                }
-
-                // Add account to alt manager & display the parent screen
-                Managers.ACCOUNT.register(account);
+                Managers.ACCOUNT.register(new CrackedAccount(accountUsername));
                 client.setScreen(parent);
             }
-        }).dimensions(width / 2 - 72, height / 2 + 20, 145, 20).build());
-        addDrawableChild(ButtonWidget.builder(Text.of("Browser..."), (action) ->
+        }).dimensions(width / 2 - 72, height / 2 + 5, 145, 20).build());
+
+        addDrawableChild(ButtonWidget.builder(Text.of("Browser Login..."), (action) ->
         {
             try
             {
@@ -90,9 +76,10 @@ public final class AccountAddAccountScreen extends Screen
             {
                 e.printStackTrace();
             }
-        }).dimensions(width / 2 - 72, height / 2 + 20 + 22, 145, 20).build());
+        }).dimensions(width / 2 - 72, height / 2 + 5 + 22, 145, 20).build());
+
         addDrawableChild(ButtonWidget.builder(Text.of("Go Back"), (action) -> client.setScreen(parent))
-                .dimensions(width / 2 - 72, height / 2 + 20 + (22 * 2), 145, 20).build());
+                .dimensions(width / 2 - 72, height / 2 + 5 + (22 * 2), 145, 20).build());
     }
 
     @Override
@@ -100,9 +87,9 @@ public final class AccountAddAccountScreen extends Screen
     {
         super.render(context, mouseX, mouseY, delta);
         context.drawTextWithShadow(client.textRenderer, "*",
-                email.getX() - 10,
-                email.getY() + (email.getHeight() / 2) - (client.textRenderer.fontHeight / 2),
-                (email.getText().length() >= 3 ? Color.green : Color.red).getRGB());
+                username.getX() - 10,
+                username.getY() + (username.getHeight() / 2) - (client.textRenderer.fontHeight / 2),
+                (username.getText().length() >= 3 ? Color.green : Color.red).getRGB());
         context.drawCenteredTextWithShadow(client.textRenderer,
                 "Add an Account", width / 2, height / 2 - 120, -1);
     }
