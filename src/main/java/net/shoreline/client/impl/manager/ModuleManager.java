@@ -52,7 +52,7 @@ public final class ModuleManager
                 new AutoCrawlTrapModule(),
                 new AutoCrystalModule(),
                 new AutoLogModule(),
-                // new AutoRegearModule(),
+                new AutoRegearModule(),
                 new AutoTotemModule(),
                 new AutoTrapModule(),
                 new AutoWebModule(),
@@ -203,7 +203,7 @@ public final class ModuleManager
                 new NukerModule(),
                 new ScaffoldModule(),
                 new SpeedmineModule()
-                // new XRayModule()
+                new XRayModule()
         );
 
         if (ShorelineMod.isBaritonePresent())
