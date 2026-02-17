@@ -116,16 +116,7 @@ public class AccountFile extends ConfigFile
             }
 
             MinecraftAccount account = null;
-            if (object.has("email") && object.has("password"))
-            {
-                account = new MicrosoftAccount(object.get("email").getAsString(),
-                        object.get("password").getAsString());
-                if (object.has("username"))
-                {
-                    ((MicrosoftAccount) account).setUsername(object.get("username").getAsString());
-                }
-            }
-            else if (object.has("token"))
+            if (object.has("token"))
             {
                 if (!object.has("username"))
                 {
@@ -135,12 +126,9 @@ public class AccountFile extends ConfigFile
                 account = new MicrosoftAccount(object.get("token").getAsString());
                 ((MicrosoftAccount) account).setUsername(object.get("username").getAsString());
             }
-            else
+            else if (object.has("username"))
             {
-                if (object.has("username"))
-                {
-                    account = new CrackedAccount(object.get("username").getAsString());
-                }
+                account = new CrackedAccount(object.get("username").getAsString());
             }
 
             if (account != null)
