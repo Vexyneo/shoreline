@@ -12,7 +12,6 @@ import net.shoreline.client.impl.manager.client.AccountManager;
  */
 public final class MicrosoftAccount implements MinecraftAccount
 {
-    private final String email, password;
     private String accessToken, username;
 
     /**
@@ -23,24 +22,11 @@ public final class MicrosoftAccount implements MinecraftAccount
      */
     public MicrosoftAccount(final String accessToken)
     {
-        this(null, null);
         if (accessToken == null || accessToken.isEmpty())
         {
             throw new RuntimeException("Access token should not be null");
         }
         this.accessToken = accessToken;
-    }
-
-    /**
-     * Creates a MicrosoftAccount instance using login credentials
-     *
-     * @param email    the microsoft email
-     * @param password the account password
-     */
-    public MicrosoftAccount(final String email, final String password)
-    {
-        this.email = email;
-        this.password = password;
     }
 
     @Override
@@ -49,20 +35,7 @@ public final class MicrosoftAccount implements MinecraftAccount
         Session session = null;
         try
         {
-            if (email != null && password != null)
-            {
-                try
-                {
-                    session = AccountManager.MSA_AUTHENTICATOR.loginWithCredentials(
-                            email, password);
-                }
-                catch (MSAAuthException e)
-                {
-                    AccountManager.MSA_AUTHENTICATOR.setLoginStage(e.getMessage());
-                    return null;
-                }
-            }
-            else if (accessToken != null)
+            if (accessToken != null)
             {
                 if (accessToken.startsWith("M."))
                 {
@@ -91,41 +64,18 @@ public final class MicrosoftAccount implements MinecraftAccount
     public JsonObject toJSON()
     {
         final JsonObject object = MinecraftAccount.super.toJSON();
-        // If we have an access token, we have a browser account
-        if (accessToken != null)
+        if (accessToken == null)
         {
-            object.addProperty("token", accessToken);
+            throw new RuntimeException("Access token is null for a MSA account");
         }
-        else
-        {
-            if (email == null || password == null)
-            {
-                throw new RuntimeException("Email/Password & Access token is null for a MSA?");
-            }
-            object.addProperty("email", email);
-            object.addProperty("password", password);
-        }
+        object.addProperty("token", accessToken);
         return object;
-    }
-
-    public String getEmail()
-    {
-        return email;
-    }
-
-    public String getPassword()
-    {
-        return password;
     }
 
     @Override
     public String username()
     {
-        if (username != null)
-        {
-            return username;
-        }
-        return email;
+        return username != null ? username : "";
     }
 
     public String getUsernameOrNull()
