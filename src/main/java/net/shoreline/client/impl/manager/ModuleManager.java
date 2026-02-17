@@ -202,7 +202,7 @@ public final class ModuleManager
                 new NoGlitchBlocksModule(),
                 new NukerModule(),
                 new ScaffoldModule(),
-                new SpeedmineModule()
+                new SpeedmineModule(),
                 new XRayModule()
         );
 
