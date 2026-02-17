@@ -9,7 +9,7 @@ jobs:
 build:
 runs-on: ubuntu-latest
 
-```
+
 steps:
   - name: 소스코드 체크아웃
     uses: actions/checkout@v4
@@ -42,4 +42,3 @@ steps:
       name: shoreline-mod-jar
       path: build/libs/*.jar
       retention-days: 7
-```
