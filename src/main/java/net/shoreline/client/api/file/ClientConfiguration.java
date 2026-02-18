@@ -54,7 +54,7 @@ public class ClientConfiguration implements Globals
         try
         {
             File homeDir = new File(System.getProperty("user.home"));
-            clientDir = homeDir.toPath().resolve("shoreline"); // user home에 저장
+            clientDir = homeDir.toPath();
         }
         // will resort to running dir if client does not have access to the 
         // user home dir
@@ -62,16 +62,17 @@ public class ClientConfiguration implements Globals
         {
             Shoreline.error("Could not access home dir, defaulting to running dir");
             e.printStackTrace();
-            clientDir = runningDir.resolve("shoreline");
+            clientDir = runningDir;
         }
         finally
         {
             // cannot write, minecraft always has access to the running dir
-            if (clientDir == null || !Files.exists(clientDir.getParent())
-                    || !Files.isWritable(clientDir.getParent()))
+            if (clientDir == null || !Files.exists(clientDir)
+                    || !Files.isWritable(clientDir))
             {
-                clientDir = runningDir.resolve("shoreline");
+                clientDir = runningDir;
             }
+            this.clientDir = mc.runDirectory.toPath().resolve("shoreline");
             // create client directory
             if (!Files.exists(clientDir))
             {
