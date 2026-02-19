@@ -27,7 +27,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.awt.*;
-import java.awt.datatransfer.Clipboard;
 import java.awt.datatransfer.StringSelection;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -40,14 +39,9 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.*;
 
-/**
- * Microsoft/Minecraft Authentication Provider
- * Optimized for Security and Code Quality
- */
 public final class MSAAuthenticator {
     private static final Logger LOGGER = LogManager.getLogger("MSA-Authenticator");
     
-    // 타임아웃 설정을 추가하여 무한 대기 방지 (품질 개선)
     private static final RequestConfig REQUEST_CONFIG = RequestConfig.custom()
             .setConnectTimeout(5000)
             .setSocketTimeout(5000)
@@ -61,7 +55,6 @@ public final class MSAAuthenticator {
             .disableCookieManagement()
             .build();
 
-    // 상수는 불변 객체로 관리
     private static final String CLIENT_ID = "d1bbd256-3323-4ab7-940e-e8a952ebdb83";
     private static final int PORT = 6969;
 
@@ -88,7 +81,6 @@ public final class MSAAuthenticator {
                 final Map<String, String> query = parseQueryString(ctx.getRequestURI().getQuery());
                 if (query.containsKey("error")) {
                     String desc = query.getOrDefault("error_description", "Unknown Error");
-                    LOGGER.error("Auth Error: {}", desc);
                     writeResponse("Authentication failed: " + desc, ctx);
                 } else {
                     String code = query.get("code");
@@ -105,7 +97,8 @@ public final class MSAAuthenticator {
         pkceData = generatePKCE();
         String url = String.format(OAUTH_AUTHORIZE_URL, CLIENT_ID, PORT, pkceData.challenge());
 
-        if (Desktop.isSupported(Desktop.Action.BROWSE)) {
+        // FIX: Desktop.isSupported는 인스턴스 메서드입니다.
+        if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
             Desktop.getDesktop().browse(new URI(url));
             setLoginStage("Waiting for browser...");
         } else {
@@ -117,33 +110,57 @@ public final class MSAAuthenticator {
         serverOpen = true;
     }
 
-    public Session loginWithToken(String token, boolean browser) throws MSAAuthException {
-        try {
-            setLoginStage("Authenticating with Xbox...");
-            XboxLiveData xblData = authWithXboxLive(token, browser);
+    /**
+     * Microsoft Account에서 사용되는 토큰 획득 메서드
+     */
+    public String getLoginToken(final String oauthToken) throws MSAAuthException {
+        if (pkceData == null) {
+            throw new MSAAuthException("PKCE data is missing. Restart login process.");
+        }
+
+        final HttpPost httpPost = new HttpPost(OAUTH_TOKEN_URL);
+        // Form Data 구성
+        String params = "client_id=" + CLIENT_ID +
+                        "&code_verifier=" + pkceData.verifier() +
+                        "&code=" + oauthToken +
+                        "&grant_type=authorization_code" +
+                        "&redirect_uri=http://localhost:" + PORT + "/login";
+
+        httpPost.setEntity(new StringEntity(params, ContentType.APPLICATION_FORM_URLENCODED));
+        httpPost.setHeader(HttpHeaders.ACCEPT, "application/json");
+
+        try (CloseableHttpResponse response = HTTP_CLIENT.execute(httpPost)) {
+            String content = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+            JsonObject obj = JsonParser.parseString(content).getAsJsonObject();
             
-            setLoginStage("Acquiring XSTS token...");
-            requestXSTSToken(xblData);
-            
-            setLoginStage("Minecraft Login...");
-            String mcAccessToken = loginToMinecraft(xblData);
-            
-            setLoginStage("Finalizing Profile...");
-            MinecraftProfile profile = fetchMinecraftProfile(mcAccessToken);
-            
-            pkceData = null; // 사용 후 즉시 제거 (보안)
-            return new Session(profile.username(), UndashedUuid.fromStringLenient(profile.id()), mcAccessToken, Optional.empty(), Optional.empty(), Session.AccountType.MSA);
-        } catch (Exception e) {
-            LOGGER.error("Login with token failed", e);
-            throw new MSAAuthException("Failed to login: " + e.getMessage());
+            if (obj.has("error")) {
+                throw new MSAAuthException(obj.get("error").getAsString() + ": " + obj.get("error_description").getAsString());
+            }
+            return obj.get("access_token").getAsString();
+        } catch (IOException e) {
+            throw new MSAAuthException("Failed to get OAuth token");
         }
     }
 
-    private MinecraftProfile fetchMinecraftProfile(String accessToken) throws MSAAuthException {
-        if (accessToken == null || accessToken.isEmpty()) throw new MSAAuthException("Invalid Access Token");
+    public Session loginWithToken(String token, boolean browser) throws MSAAuthException {
+        setLoginStage("Authenticating with Xbox...");
+        XboxLiveData xblData = authWithXboxLive(token, browser);
+        
+        setLoginStage("Acquiring XSTS token...");
+        requestXSTSToken(xblData);
+        
+        setLoginStage("Minecraft Login...");
+        String mcAccessToken = loginToMinecraft(xblData);
+        
+        setLoginStage("Finalizing Profile...");
+        MinecraftProfile profile = fetchMinecraftProfile(mcAccessToken);
+        
+        pkceData = null;
+        return new Session(profile.username(), UndashedUuid.fromStringLenient(profile.id()), mcAccessToken, Optional.empty(), Optional.empty(), Session.AccountType.MSA);
+    }
 
+    private MinecraftProfile fetchMinecraftProfile(String accessToken) throws MSAAuthException {
         HttpGet request = new HttpGet(MINECRAFT_PROFILE_URL);
-        // Header 상수를 사용하여 정적 분석 오탐 방지
         request.setHeader(HttpHeaders.ACCEPT, ContentType.APPLICATION_JSON.getMimeType());
         request.setHeader(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
 
@@ -159,7 +176,6 @@ public final class MSAAuthenticator {
         }
     }
 
-    // 공통 요청 메서드로 중복 제거 및 보안 강화
     private String makeSecurePost(String url, String body) throws MSAAuthException {
         HttpPost post = new HttpPost(url);
         post.setEntity(new StringEntity(body, ContentType.APPLICATION_JSON));
@@ -168,7 +184,6 @@ public final class MSAAuthenticator {
         try (CloseableHttpResponse response = HTTP_CLIENT.execute(post)) {
             String res = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
             if (response.getStatusLine().getStatusCode() >= 400) {
-                LOGGER.error("API Error Response: {}", res);
                 throw new MSAAuthException("API returned error: " + response.getStatusLine().getStatusCode());
             }
             return res;
@@ -193,7 +208,7 @@ public final class MSAAuthenticator {
                       data.getToken());
         
         JsonObject obj = JsonParser.parseString(makeSecurePost(XBOX_XSTS_AUTH_URL, body)).getAsJsonObject();
-        if (obj.has("XErr")) throw new MSAAuthException("XSTS Error Code: " + obj.get("XErr").getAsString());
+        if (obj.has("XErr")) throw new MSAAuthException("XSTS Error: " + obj.get("XErr").getAsString());
         data.setToken(obj.get("Token").getAsString());
     }
 
@@ -239,7 +254,7 @@ public final class MSAAuthenticator {
         Map<String, String> res = new HashMap<>();
         for (String s : q.split("&")) {
             String[] kv = s.split("=");
-            res.put(kv[0], kv.length > 1 ? kv[1] : "");
+            if (kv.length >= 2) res.put(kv[0], kv[1]);
         }
         return res;
     }
