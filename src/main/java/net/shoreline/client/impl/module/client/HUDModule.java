@@ -192,7 +192,14 @@ public class HUDModule extends ToggleModule
                 hudRenderModule.updateAnimation();
             }
         }
-
+        if (!(mc.currentScreen instanceof net.shoreline.client.impl.gui.hud.HudEditorScreen)) {
+            for (net.shoreline.client.impl.gui.hud.widget.HudWidget widget
+                    : net.shoreline.client.impl.gui.hud.HudWidgetManager.getInstance().getWidgets()) {
+                if (widget.isEnabled()) {
+                    widget.renderHud(event.getContext());
+                }
+            }
+        }
         fpsCounter.updateCounter();
         if (mc.player != null && mc.world != null)
         {
