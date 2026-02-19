@@ -1,62 +1,55 @@
 package net.shoreline.client.impl.module.world;
 
 import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
-import net.minecraft.world.BlockRenderView;
 import net.shoreline.client.api.config.Config;
 import net.shoreline.client.api.config.setting.BlockListConfig;
 import net.shoreline.client.api.config.setting.BooleanConfig;
 import net.shoreline.client.api.config.setting.NumberConfig;
 import net.shoreline.client.api.module.ModuleCategory;
 import net.shoreline.client.api.module.ToggleModule;
+import net.shoreline.client.impl.event.render.block.RenderBlockEvent;
+import net.shoreline.client.util.render.RenderUtil;
+import net.shoreline.eventbus.annotation.EventListener;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * XRay 모듈 - 완전 재설계
+ * XRay 모듈 - 수정 버전
  *
- * <p>기존 구현의 문제점:</p>
+ * <h2>기존 구현의 문제점</h2>
+ * <ol>
+ *   <li><b>리스너 없음</b>: MixinBlockRenderManager가 RenderBlockEvent를 dispatch하는데,
+ *       XRayModule에 @EventListener가 아예 없었음 → X-Ray 기능이 동작 자체를 안 했음</li>
+ *   <li><b>잘못된 API 호출</b>: scheduleBlockRerenderIfNeeded(int,int,int,int,int,int) 시그니처가
+ *       1.21.1에 존재하지 않음. 이미 프로젝트에 RenderUtil.reloadRenders()가 있음</li>
+ * </ol>
+ *
+ * <h2>수정 사항</h2>
  * <ul>
- *   <li>MixinBlockRenderManager의 renderBlock 훅이 프레임당 수천 번 호출되어 심각한 렉 유발</li>
- *   <li>XRayModule이 RenderBlockEvent 리스너 자체가 없어 실제로 동작도 안 함</li>
- *   <li>이벤트 dispatch 오버헤드가 누적되어 프레임 타임을 급격히 증가시킴</li>
+ *   <li>onEnable/onDisable에서 RenderUtil.reloadRenders() 호출</li>
+ *   <li>@EventListener onRenderBlock() 추가 → 화이트리스트 외 블록 렌더링 취소</li>
+ *   <li>화이트리스트를 HashSet으로 캐싱 → 청크 빌드 중 O(1) 조회</li>
+ *   <li>Config 변경 감지 시 캐시 자동 갱신</li>
  * </ul>
  *
- * <p>새 구현 전략:</p>
- * <ul>
- *   <li>{@link #isXRayBlock(Block)}를 static 메서드로 노출 → Mixin에서 직접 호출 (이벤트 버스 제거)</li>
- *   <li>화이트리스트를 {@link HashSet}으로 캐싱 → O(1) 조회, Config 변경 시에만 재빌드</li>
- *   <li>토글 시에만 청크 리로드, 렌더 루프에서 호출 최소화</li>
- *   <li>MixinBlockRenderManager의 무거운 이벤트 dispatch 대신 {@link MixinAbstractBlockState}에서
- *       {@code isOpaque()} 오버라이드로 face culling 단계에서 처리 → 비가시 블록은 아예 렌더링 안 됨</li>
- * </ul>
- *
- * @author optimized
- * @since 2.0
+ * <p><b>주의 (Sodium 호환성)</b>: MixinBlockRenderManager의 renderBlock 훅은
+ * Sodium과 호환되지 않습니다. Sodium은 자체 청크 렌더러를 사용합니다.
+ * Sodium 없이 Vanilla 렌더러를 사용하는 환경에서만 동작합니다.</p>
  */
 public class XRayModule extends ToggleModule {
 
-    // ───────────────────── Singleton ─────────────────────
-    private static XRayModule INSTANCE;
-
-    public static XRayModule getInstance() {
-        return INSTANCE;
-    }
-
     // ───────────────────── Configs ─────────────────────
     Config<Integer> opacityConfig = register(new NumberConfig<>(
-            "Opacity", "X-Ray가 아닌 블록의 투명도 (0=완전 투명, 255=불투명)", 0, 0, 255));
+            "Opacity", "X-Ray 외 블록의 투명도 (현재 미사용, 추후 셰이더 연동용)", 0, 120, 255));
 
     Config<Boolean> softReloadConfig = register(new BooleanConfig(
-            "SoftReload", "토글 시 청크를 부드럽게 리로드", true));
+            "SoftReload", "토글 시 현재 시야 범위 청크만 재빌드 (true=부드러움, false=전체 리로드)", true));
 
     Config<List<Block>> blocksConfig = register(new BlockListConfig<>(
-            "Blocks", "X-Ray로 볼 블록 화이트리스트",
+            "Blocks", "X-Ray로 표시할 블록 화이트리스트",
             Blocks.EMERALD_ORE, Blocks.DIAMOND_ORE, Blocks.IRON_ORE,
             Blocks.GOLD_ORE, Blocks.COAL_ORE, Blocks.LAPIS_ORE,
             Blocks.REDSTONE_ORE, Blocks.COPPER_ORE,
@@ -69,119 +62,82 @@ public class XRayModule extends ToggleModule {
             Blocks.GOLD_BLOCK, Blocks.COPPER_BLOCK, Blocks.BEACON,
             Blocks.SPAWNER, Blocks.ANCIENT_DEBRIS, Blocks.NETHER_GOLD_ORE));
 
-    // ───────────────────── 캐시된 화이트리스트 ─────────────────────
+    // ───────────────────── 캐시 ─────────────────────
     /**
-     * Config List → HashSet 캐시.
-     * Config가 변경될 때만 재빌드되며, Mixin에서 O(1)로 조회한다.
+     * Config List를 HashSet으로 캐싱.
+     * 청크 빌드 스레드에서 매 블록마다 호출되므로 O(1) 조회 필수.
+     * 청크 빌드는 읽기 전용 접근이므로 별도 동기화 불필요.
      */
     private final Set<Block> xrayBlockCache = new HashSet<>();
 
-    // 마지막으로 캐시를 빌드했을 때의 리스트 크기 (변경 감지용)
+    /** 캐시 유효성 검사용: Config 리스트 크기가 달라지면 재빌드 */
     private int lastCacheSize = -1;
 
     public XRayModule() {
-        super("XRay", "솔리드 블록을 투시해 광물을 볼 수 있게 합니다", ModuleCategory.WORLD);
-        INSTANCE = this;
+        super("XRay", "솔리드 블록을 투시하여 광물을 볼 수 있습니다", ModuleCategory.WORLD);
     }
 
-    // ───────────────────── 토글 ─────────────────────
+    // ───────────────────── 라이프사이클 ─────────────────────
 
     @Override
     public void onEnable() {
         rebuildCache();
-        reloadChunks();
+        // 기존 렌더링 청크를 X-Ray 모드로 재빌드
+        RenderUtil.reloadRenders(softReloadConfig.getValue());
     }
 
     @Override
     public void onDisable() {
         xrayBlockCache.clear();
         lastCacheSize = -1;
-        reloadChunks();
+        // 정상 렌더링으로 복원
+        RenderUtil.reloadRenders(softReloadConfig.getValue());
     }
 
-    // ───────────────────── 공개 API (Mixin에서 호출) ─────────────────────
+    // ───────────────────── 이벤트 처리 ─────────────────────
 
     /**
-     * 해당 블록이 X-Ray 화이트리스트에 있는지 확인한다.
+     * 블록 렌더링 이벤트 처리.
      *
-     * <p>이 메서드는 {@link net.shoreline.client.mixin.world.MixinAbstractBlockState}에서
-     * {@code isOpaque()}, {@code isSideInvisibleTo()} 등의 시점에 호출된다.
-     * 렌더 스레드에서 호출되므로 절대로 blocking 연산을 수행하지 않아야 한다.</p>
+     * <p>MixinBlockRenderManager.renderBlock()에서 dispatch된 이벤트를 수신한다.
+     * 화이트리스트에 없는 블록은 렌더링을 취소하여 X-Ray 효과를 만든다.</p>
      *
-     * @param block 검사할 블록
-     * @return 화이트리스트에 포함되면 true
+     * <p>이 메서드는 청크 빌드 스레드에서 호출되므로 반드시 스레드 세이프해야 한다.
+     * HashSet 읽기는 쓰기가 없는 한 안전하다.</p>
+     *
+     * @param event 블록 렌더 이벤트
      */
-    public boolean isXRayBlock(Block block) {
+    @EventListener
+    public void onRenderBlock(RenderBlockEvent event) {
+        // 캐시 유효성 검사 (크기 변화만 감지, 렌더 스레드 부하 최소화)
         ensureCacheUpToDate();
-        return xrayBlockCache.contains(block);
-    }
-
-    /**
-     * X-Ray 활성 상태에서 특정 위치의 블록을 렌더링해야 하는지 반환한다.
-     *
-     * <p>Mixin의 face culling 훅 {@code shouldDrawSide}에서 호출된다.</p>
-     *
-     * @param state 블록 상태
-     * @param pos 블록 위치
-     * @param direction 렌더링 면 방향
-     * @return 렌더링해야 하면 true
-     */
-    public boolean shouldRender(BlockState state, BlockPos pos, Direction direction) {
-        ensureCacheUpToDate();
-        return xrayBlockCache.contains(state.getBlock());
-    }
-
-    /**
-     * 현재 Opacity 설정값을 0.0~1.0 범위로 반환한다.
-     */
-    public float getOpacityAlpha() {
-        return opacityConfig.getValue() / 255.0f;
+        // 화이트리스트에 없는 블록 → 렌더링 취소 → 보이지 않음 → X-Ray 효과
+        if (!xrayBlockCache.contains(event.getBlock())) {
+            event.cancel();
+        }
     }
 
     // ───────────────────── 내부 유틸 ─────────────────────
 
     /**
-     * Config 리스트의 변경을 감지하고 필요시 캐시를 재빌드한다.
-     * 렌더 스레드에서 매 블록마다 호출될 수 있으므로 변경이 없으면 즉시 리턴한다.
+     * Config 리스트 크기를 확인하여 변경 시 캐시를 재빌드한다.
+     * 크기가 같으면 O(1)로 즉시 리턴한다.
      */
     private void ensureCacheUpToDate() {
-        List<Block> configList = blocksConfig.getValue();
-        // 크기 비교만으로 1차 필터링 → 변경 없으면 O(1) 리턴
-        if (configList.size() != lastCacheSize) {
+        List<Block> list = blocksConfig.getValue();
+        if (list.size() != lastCacheSize) {
             rebuildCache();
         }
     }
 
     /**
-     * Config 리스트를 HashSet으로 완전히 재빌드한다.
-     * 활성화 시 또는 Config 변경 감지 시에만 호출된다.
+     * Config 리스트를 HashSet으로 완전 재빌드한다.
+     * 모듈 활성화 시 또는 Config 변경 감지 시에만 실행된다.
      */
     private void rebuildCache() {
-        List<Block> configList = blocksConfig.getValue();
+        List<Block> list = blocksConfig.getValue();
         xrayBlockCache.clear();
-        xrayBlockCache.addAll(configList);
-        lastCacheSize = configList.size();
-    }
-
-    /**
-     * 청크 렌더를 리로드해 변경 사항을 즉시 반영한다.
-     * 메인 스레드에서만 호출해야 한다.
-     */
-    private void reloadChunks() {
-        if (mc.worldRenderer == null) {
-            return;
-        }
-        if (softReloadConfig.getValue()) {
-            // scheduleBlockRenders 대신 reload 전체를 피하고
-            // WorldRenderer의 부분 갱신만 요청한다
-            mc.worldRenderer.scheduleBlockRerenderIfNeeded(
-                    (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ(),
-                    (int) mc.player.getX(), (int) mc.player.getY(), (int) mc.player.getZ()
-            );
-            // 전체 가시 범위 청크 재빌드
-            mc.worldRenderer.reload();
-        } else {
-            mc.worldRenderer.reload();
-        }
+        xrayBlockCache.addAll(list);
+        lastCacheSize = list.size();
     }
 }
