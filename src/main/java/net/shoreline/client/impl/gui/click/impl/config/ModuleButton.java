@@ -10,8 +10,10 @@ import net.shoreline.client.api.render.RenderManager;
 import net.shoreline.client.impl.gui.click.component.Button;
 import net.shoreline.client.impl.gui.click.impl.SearchButton;
 import net.shoreline.client.impl.gui.click.impl.config.setting.*;
+import net.shoreline.client.impl.gui.hud.HudEditorScreen;
 import net.shoreline.client.impl.manager.world.sound.SoundManager;
 import net.shoreline.client.impl.module.client.ClickGuiModule;
+import net.shoreline.client.impl.module.client.HUDModule;
 import net.shoreline.client.init.Managers;
 import net.shoreline.client.util.render.animation.Animation;
 import net.shoreline.client.util.render.animation.Easing;
@@ -26,6 +28,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * @see Module
  * @see CategoryFrame
  * @since 1.0
+ *
+ * <p><b>수정 사항:</b> HUDModule 우클릭 시 기존 설정 패널 대신
+ * {@link HudEditorScreen}을 열도록 변경.</p>
  */
 public class ModuleButton extends Button
 {
@@ -154,7 +159,13 @@ public class ModuleButton extends Button
             colorText = b1 ? grayText : whiteText;
         }
 
-        drawStringScaled(context, module.getName(), ix + (2.0f * ClickGuiModule.CLICK_GUI_SCALE), iy + (3.5f * ClickGuiModule.CLICK_GUI_SCALE), colorText);
+        // HUD 모듈일 때 이름 옆에 에디터 아이콘 힌트 표시
+        String displayName = module.getName();
+        if (module instanceof HUDModule) {
+            displayName = module.getName() + " §7✎";
+        }
+        drawStringScaled(context, displayName, ix + (2.0f * ClickGuiModule.CLICK_GUI_SCALE), iy + (3.5f * ClickGuiModule.CLICK_GUI_SCALE), colorText);
+
         if (settingsAnimation.getFactor() > 0.01f)
         {
             off = y + (height * ClickGuiModule.CLICK_GUI_SCALE) + ClickGuiModule.CLICK_GUI_SCALE;
@@ -237,13 +248,17 @@ public class ModuleButton extends Button
             if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && module instanceof ToggleModule t)
             {
                 t.toggle();
-                // ToggleGuiEvent toggleGuiEvent = new ToggleGuiEvent(t);
-                // Caspian.EVENT_HANDLER.dispatch(toggleGuiEvent);
             }
             else if (button == GLFW.GLFW_MOUSE_BUTTON_RIGHT)
             {
-                open = !open;
-                settingsAnimation.setState(open);
+                // ★ HUD 모듈 우클릭 → HUD 에디터 화면으로 이동
+                if (module instanceof HUDModule) {
+                    mc.setScreen(new HudEditorScreen());
+                } else {
+                    // 다른 모듈은 기존대로 설정 패널 열기
+                    open = !open;
+                    settingsAnimation.setState(open);
+                }
             }
 
             if (ClickGuiModule.getInstance().getSounds())
