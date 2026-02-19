@@ -30,6 +30,7 @@ public class HudWidgetManager implements Globals {
         register(new ArmorWidget());
         register(new InventoryWidget());
         register(new PotionEffectsWidget());
+        register(new MapWidget());
     }
 
     public static HudWidgetManager getInstance() {
