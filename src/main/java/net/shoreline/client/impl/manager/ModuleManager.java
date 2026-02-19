@@ -53,6 +53,7 @@ public final class ModuleManager
                 new AutoCrystalModule(),
                 new AutoLogModule(),
                 new AutoRegearModule(),
+                new KeyPearlModule(),
                 new AutoTotemModule(),
                 new AutoTrapModule(),
                 new AutoWebModule(),
