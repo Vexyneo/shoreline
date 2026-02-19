@@ -8,45 +8,51 @@ import net.shoreline.client.api.config.setting.BooleanConfig;
 import net.shoreline.client.api.config.setting.NumberConfig;
 import net.shoreline.client.api.module.ModuleCategory;
 import net.shoreline.client.api.module.ToggleModule;
-import net.shoreline.client.impl.event.render.block.RenderBlockEvent;
 import net.shoreline.client.util.render.RenderUtil;
-import net.shoreline.eventbus.annotation.EventListener;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /**
- * XRay 모듈 - 수정 버전
+ * XRay 모듈 - 최종 최적화 버전
  *
- * <h2>기존 구현의 문제점</h2>
- * <ol>
- *   <li><b>리스너 없음</b>: MixinBlockRenderManager가 RenderBlockEvent를 dispatch하는데,
- *       XRayModule에 @EventListener가 아예 없었음 → X-Ray 기능이 동작 자체를 안 했음</li>
- *   <li><b>잘못된 API 호출</b>: scheduleBlockRerenderIfNeeded(int,int,int,int,int,int) 시그니처가
- *       1.21.1에 존재하지 않음. 이미 프로젝트에 RenderUtil.reloadRenders()가 있음</li>
- * </ol>
+ * <h2>아키텍처</h2>
+ * <p>이 모듈은 {@code @EventListener}를 사용하지 않는다.
+ * 대신 {@link net.shoreline.client.mixin.render.block.MixinBlockRenderManager}가
+ * 청크 빌드 중 {@link #isXRayBlock(Block)}을 직접 호출한다.</p>
  *
- * <h2>수정 사항</h2>
- * <ul>
- *   <li>onEnable/onDisable에서 RenderUtil.reloadRenders() 호출</li>
- *   <li>@EventListener onRenderBlock() 추가 → 화이트리스트 외 블록 렌더링 취소</li>
- *   <li>화이트리스트를 HashSet으로 캐싱 → 청크 빌드 중 O(1) 조회</li>
- *   <li>Config 변경 감지 시 캐시 자동 갱신</li>
- * </ul>
+ * <p>이 방식이 EventBus 방식보다 빠른 이유:</p>
+ * <pre>
+ *   EventBus: new 객체 할당 → GC 압박 → 리스너 순회 → 가상 디스패치
+ *   직접호출: 정적 참조 → HashSet.contains() → 끝
+ * </pre>
  *
- * <p><b>주의 (Sodium 호환성)</b>: MixinBlockRenderManager의 renderBlock 훅은
- * Sodium과 호환되지 않습니다. Sodium은 자체 청크 렌더러를 사용합니다.
- * Sodium 없이 Vanilla 렌더러를 사용하는 환경에서만 동작합니다.</p>
+ * <h2>스레드 안전성</h2>
+ * <p>청크 빌드는 백그라운드 워커 스레드에서 실행된다.
+ * {@link #xrayBlockCache}는 모듈 활성화/비활성화 시(메인 스레드)에만 쓰기가 발생하고,
+ * 청크 빌드 시(워커 스레드)에는 읽기만 발생한다.</p>
+ * <p>가시성 보장: {@code volatile Set} 참조로 처리한다.</p>
  */
 public class XRayModule extends ToggleModule {
 
+    // ───────────────────── Singleton ─────────────────────
+    private static volatile XRayModule INSTANCE;
+
+    /**
+     * MixinBlockRenderManager에서 직접 호출한다.
+     * 청크 빌드 스레드에서 접근하므로 volatile로 선언.
+     */
+    public static XRayModule getInstance() {
+        return INSTANCE;
+    }
+
     // ───────────────────── Configs ─────────────────────
     Config<Integer> opacityConfig = register(new NumberConfig<>(
-            "Opacity", "X-Ray 외 블록의 투명도 (현재 미사용, 추후 셰이더 연동용)", 0, 120, 255));
+            "Opacity", "X-Ray 외 블록 투명도 (추후 셰이더 연동)", 0, 120, 255));
 
     Config<Boolean> softReloadConfig = register(new BooleanConfig(
-            "SoftReload", "토글 시 현재 시야 범위 청크만 재빌드 (true=부드러움, false=전체 리로드)", true));
+            "SoftReload", "토글 시 시야 범위 청크만 재빌드 (false = 전체 리로드)", true));
 
     Config<List<Block>> blocksConfig = register(new BlockListConfig<>(
             "Blocks", "X-Ray로 표시할 블록 화이트리스트",
@@ -64,80 +70,68 @@ public class XRayModule extends ToggleModule {
 
     // ───────────────────── 캐시 ─────────────────────
     /**
-     * Config List를 HashSet으로 캐싱.
-     * 청크 빌드 스레드에서 매 블록마다 호출되므로 O(1) 조회 필수.
-     * 청크 빌드는 읽기 전용 접근이므로 별도 동기화 불필요.
+     * volatile 참조: 메인 스레드가 새 Set을 쓸 때 워커 스레드가 즉시 최신 값을 읽음.
+     * Set 내부 데이터는 불변이므로 참조만 volatile이면 충분하다.
      */
-    private final Set<Block> xrayBlockCache = new HashSet<>();
-
-    /** 캐시 유효성 검사용: Config 리스트 크기가 달라지면 재빌드 */
-    private int lastCacheSize = -1;
+    private volatile Set<Block> xrayBlockCache = new HashSet<>();
 
     public XRayModule() {
-        super("XRay", "솔리드 블록을 투시하여 광물을 볼 수 있습니다", ModuleCategory.WORLD);
+        super("XRay", "솔리드 블록을 투시해 광물을 볼 수 있습니다", ModuleCategory.WORLD);
+        INSTANCE = this;
     }
 
     // ───────────────────── 라이프사이클 ─────────────────────
 
     @Override
     public void onEnable() {
+        // 캐시 빌드 후 청크 재빌드 (메인 스레드)
         rebuildCache();
-        // 기존 렌더링 청크를 X-Ray 모드로 재빌드
         RenderUtil.reloadRenders(softReloadConfig.getValue());
     }
 
     @Override
     public void onDisable() {
-        xrayBlockCache.clear();
-        lastCacheSize = -1;
-        // 정상 렌더링으로 복원
+        // 빈 Set으로 교체 (volatile write → 워커 스레드 즉시 반영)
+        xrayBlockCache = new HashSet<>();
         RenderUtil.reloadRenders(softReloadConfig.getValue());
     }
 
-    // ───────────────────── 이벤트 처리 ─────────────────────
+    // ───────────────────── 공개 API ─────────────────────
 
     /**
-     * 블록 렌더링 이벤트 처리.
+     * 해당 블록이 X-Ray 화이트리스트에 있는지 확인한다.
      *
-     * <p>MixinBlockRenderManager.renderBlock()에서 dispatch된 이벤트를 수신한다.
-     * 화이트리스트에 없는 블록은 렌더링을 취소하여 X-Ray 효과를 만든다.</p>
+     * <p>이 메서드는 {@link net.shoreline.client.mixin.render.block.MixinBlockRenderManager}에서
+     * 청크 빌드 스레드에서 직접 호출된다. 반드시 스레드 세이프하고 빠르게 리턴해야 한다.</p>
      *
-     * <p>이 메서드는 청크 빌드 스레드에서 호출되므로 반드시 스레드 세이프해야 한다.
-     * HashSet 읽기는 쓰기가 없는 한 안전하다.</p>
+     * <p>현재 구현: HashSet.contains() = O(1), 동기화 없음 (읽기 전용)</p>
      *
-     * @param event 블록 렌더 이벤트
+     * @param block 확인할 블록
+     * @return 화이트리스트에 있으면 true
      */
-    @EventListener
-    public void onRenderBlock(RenderBlockEvent event) {
-        // 캐시 유효성 검사 (크기 변화만 감지, 렌더 스레드 부하 최소화)
-        ensureCacheUpToDate();
-        // 화이트리스트에 없는 블록 → 렌더링 취소 → 보이지 않음 → X-Ray 효과
-        if (!xrayBlockCache.contains(event.getBlock())) {
-            event.cancel();
+    public boolean isXRayBlock(Block block) {
+        // Config 변경 감지: 리스트 크기로 1차 체크 (렌더 스레드 부하 최소화)
+        List<Block> configList = blocksConfig.getValue();
+        if (configList.size() != xrayBlockCache.size()) {
+            // 메인 스레드가 아니면 캐시 갱신을 스킵 (다음 메인 틱에 반영됨)
+            // → 렌더 스레드에서 synchronized 방지
+            if (net.minecraft.client.MinecraftClient.getInstance().isOnThread()) {
+                rebuildCache();
+            }
         }
+        return xrayBlockCache.contains(block);
     }
 
     // ───────────────────── 내부 유틸 ─────────────────────
 
     /**
-     * Config 리스트 크기를 확인하여 변경 시 캐시를 재빌드한다.
-     * 크기가 같으면 O(1)로 즉시 리턴한다.
-     */
-    private void ensureCacheUpToDate() {
-        List<Block> list = blocksConfig.getValue();
-        if (list.size() != lastCacheSize) {
-            rebuildCache();
-        }
-    }
-
-    /**
-     * Config 리스트를 HashSet으로 완전 재빌드한다.
-     * 모듈 활성화 시 또는 Config 변경 감지 시에만 실행된다.
+     * Config 리스트를 새 HashSet으로 재빌드하고 volatile 참조를 교체한다.
+     * 메인 스레드에서만 호출할 것.
      */
     private void rebuildCache() {
         List<Block> list = blocksConfig.getValue();
-        xrayBlockCache.clear();
-        xrayBlockCache.addAll(list);
-        lastCacheSize = list.size();
+        // 새 Set 생성 후 volatile 참조 교체 → 워커 스레드가 원자적으로 최신 캐시 읽음
+        Set<Block> newCache = new HashSet<>(list);
+        xrayBlockCache = newCache;
     }
 }
