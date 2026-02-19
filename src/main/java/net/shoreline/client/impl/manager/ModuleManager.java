@@ -184,6 +184,7 @@ public final class ModuleManager
                 // new SkeletonModule(),
                 new SkyboxModule(),
                 new StorageESPModule(),
+                new MapModule(),
                 new StashFinderModule(),
                 new TooltipsModule(),
                 new TracersModule(),
