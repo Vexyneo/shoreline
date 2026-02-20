@@ -384,7 +384,7 @@ public class HeadlessMCModule extends ToggleModule
                 {
                     String trimmed = name.trim();
                     if (trimmed.isEmpty()) continue;
-                    ToggleModule mod = (ToggleModule) Managers.MODULE.getModule(trimmed);
+                    ToggleModule mod = (ToggleModule) Managers.MODULE.getModuleById(trimmed);
                     if (mod != null && !mod.isEnabled())
                     {
                         mod.enable();
