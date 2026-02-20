@@ -104,6 +104,7 @@ public final class ModuleManager
                 new AutoFrameDupeModule(),
                 new AutoMountModule(),
                 new AutoReconnectModule(),
+                new HeadlessMCModule(),
                 new AutoRespawnModule(),
                 // new BeaconSelectorModule(),
                 new BetterChatModule(),
